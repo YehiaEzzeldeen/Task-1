@@ -192,30 +192,110 @@ Resources:
               ToPort: 65535
               CidrIp: 0.0.0.0/0
 
-    FargateAlb:
-        Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    ecrRepository:
+        Type: AWS::ECR::Repository
+        Properties: 
+            RepositoryName: ecs-repo
+    
+    ecsCluster:
+        Type: AWS::ECS::Cluster
         Properties:
-            Name: FargateAlb
-            Subnets:
-                - !Ref PublicSubnet1
-                - !Ref PublicSubnet2
-            Type: application
+            ClusterName: Fargate-ECS-Cluster
+
+    TaskDefinition:
+        Type: AWS::ECS::TaskDefinition
+        Properties:
+            NetworkMode: awsvpc
+            RequiresCompatibilities:
+                - FARGATE
+            Cpu: 256
+            Memory: 0.5GB
+            ExecutionRoleArn: ecsTaskExecutionRole
+            TaskRoleArn: ecsTaskExecutionRole
+            ContainerDefinitions:
+            - Name: latest
+              Image: 624792314775.dkr.ecr.us-west-1.amazonaws.com/ecs-repo:latest
+              PortMappings:
+                - ContainerPort: 80
+
+    TaskSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Allow http to the Task
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+            - IpProtocol: tcp
+              FromPort: 80
+              ToPort: 80
+              SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+            SecurityGroupEgress:
+            - IpProtocol: tcp
+              FromPort: 0
+              ToPort: 65535
+              CidrIp: 0.0.0.0/0
+
+    TargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+            HealthCheckIntervalSeconds: 10
+            HealthCheckPath: /
+            HealthCheckTimeoutSeconds: 5
+            UnhealthyThresholdCount: 2
+            HealthyThresholdCount: 2
+            Name: NginxTargetGrp
+            Port: 80
+            Protocol: HTTP
+            TargetType: ip
+            VpcId: !Ref VPC
+
+    LoadBalancer:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        Properties:
+            Name: ECS-LB
             Scheme: internet-facing
             SecurityGroups:
                 - !Ref LoadBalancerSecurityGroup
+            Subnets:
+                - !Ref PublicSubnet1
+                - !Ref PublicSubnet2
 
-
-    ECR-Repository:
-        Type: AWS::ECR::Repository
-        Properties: 
-            RepositoryName: ECS-Repo
-    
-    ECS-Cluster:
-        Type: AWS::ECS::Cluster
+    ListenerHTTP:
+        Type: AWS::ElasticLoadBalancingV2::Listener
         Properties:
-            ClusterName: Fargate ECS Cluster
+            DefaultActions:
+                - TargetGroupArn: !Ref TargetGroup
+                  Type: forward
+            LoadBalancerArn: !Ref LoadBalancer
+            Port: 80
+            Protocol: HTTP
+        
 
-
+    ecsService:
+        Type: AWS::ECS::Service
+        DependsOn:
+            - ListenerHTTP
+        Properties: 
+            ServiceName: ecsNginxService
+            Cluster: !Ref ecsCluster
+            TaskDefinition: !Ref TaskDefinition
+            DeploymentConfiguration:
+                MinimumHealthyPercent: 100
+                MaximumPercent: 200
+            DesiredCount: 1
+            HealthCheckGracePeriodSeconds: 30
+            LaunchType: FARGATE
+            NetworkConfiguration: 
+                AwsvpcConfiguration:
+                    AssignPublicIp: DISABLED
+                    Subnets:
+                        - !Ref PrivateSubnet1
+                        - !Ref PrivateSubnet2
+                    SecurityGroups:
+                        - !Ref TaskSecurityGroup
+            LoadBalancers:
+                - ContainerName: latest
+                  ContainerPort: 80
+                  TargetGroupArn: !Ref TargetGroup
 
 Outputs:
     VPC: 
@@ -254,8 +334,12 @@ Outputs:
         Export:
           Name: PRIV-SUBNETS
 
-    ECR-Repository:
+    ecrRepositoryURI:
         Description: ECR Repository URI
-        Value: !GetAtt ECR-Repository.RepositoryUri
+        Value: !GetAtt ecrRepository.RepositoryUri
         Export:
-          Name: ECR Repository URI
+          Name: ECR-Repository-URI
+    LoadBalancerSecurityGroupOutput:
+        Value: !Ref LoadBalancerSecurityGroup
+        Export:
+          Name: LB-Sec-Grp
